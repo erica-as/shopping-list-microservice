@@ -1,0 +1,33 @@
+{
+  "product-service": {
+    "url": "http://127.0.0.1:3002",
+    "version": "1.0.0",
+    "database": "JSON-NoSQL",
+    "endpoints": [
+      "/health",
+      "/products",
+      "/categories",
+      "/search"
+    ],
+    "registeredAt": 1763947067682,
+    "lastHealthCheck": 1763947728222,
+    "healthy": true,
+    "pid": 17972
+  },
+  "user-service": {
+    "url": "http://localhost:3001",
+    "version": "1.0.0",
+    "database": "JSON-NoSQL",
+    "endpoints": [
+      "/health",
+      "/auth/register",
+      "/auth/login",
+      "/users",
+      "/search"
+    ],
+    "registeredAt": 1763947068781,
+    "lastHealthCheck": 1763947729081,
+    "healthy": true,
+    "pid": 18108
+  }
+}
