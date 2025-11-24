@@ -1,7 +1,7 @@
 {
-  "name": "product-service",
+  "name": "item-service",
   "version": "1.0.0",
-  "description": "Microsserviço de Produtos com Banco NoSQL - PUC Minas",
+  "description": "Microsserviço de Itens - PUC Minas",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -50,7 +50,7 @@
     ]
   },
   "environment": {
-    "PORT": 3002,
+    "PORT": 3003,
     "NODE_ENV": "development"
   }
 }

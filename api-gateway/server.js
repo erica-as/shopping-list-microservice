@@ -1,516 +1,436 @@
-const express = require('express');
-const cors = require('cors');
-const helmet = require('helmet');
-const morgan = require('morgan');
-const axios = require('axios');
+const express = require("express");
+const cors = require("cors");
+const helmet = require("helmet");
+const morgan = require("morgan");
+const axios = require("axios");
 
 // Importar service registry
-const serviceRegistry = require('../shared/serviceRegistry');
+const serviceRegistry = require("../shared/serviceRegistry");
 
 class APIGateway {
-    constructor() {
-        this.app = express();
-        this.port = process.env.PORT || 3000;
-        
-        // Circuit breaker simples
-        this.circuitBreakers = new Map();
-        
-        this.setupMiddleware();
-        this.setupRoutes();
-        this.setupErrorHandling();
-        setTimeout(() => {
-            this.startHealthChecks();
-        }, 3000); // Aguardar 3 segundos antes de iniciar health checks
-    }
+  constructor() {
+    this.app = express();
+    this.port = process.env.PORT || 3000;
 
-    setupMiddleware() {
-        this.app.use(helmet());
-        this.app.use(cors());
-        this.app.use(morgan('combined'));
-        this.app.use(express.json());
-        this.app.use(express.urlencoded({ extended: true }));
+    // Circuit breaker simples
+    this.circuitBreakers = new Map();
 
-        // Gateway headers
-        this.app.use((req, res, next) => {
-            res.setHeader('X-Gateway', 'api-gateway');
-            res.setHeader('X-Gateway-Version', '1.0.0');
-            res.setHeader('X-Architecture', 'Microservices-NoSQL');
-            next();
+    this.setupMiddleware();
+    this.setupRoutes();
+    this.setupErrorHandling();
+    setTimeout(() => {
+      this.startHealthChecks();
+    }, 3000);
+  }
+
+  setupMiddleware() {
+    this.app.use(helmet());
+    this.app.use(cors());
+    this.app.use(morgan("combined"));
+    this.app.use(express.json());
+    this.app.use(express.urlencoded({ extended: true }));
+
+    // Gateway headers
+    this.app.use((req, res, next) => {
+      res.setHeader("X-Gateway", "api-gateway");
+      res.setHeader("X-Gateway-Version", "1.0.0");
+      res.setHeader("X-Architecture", "Microservices-NoSQL");
+      next();
+    });
+
+    // Request logging
+    this.app.use((req, res, next) => {
+      console.log(`${req.method} ${req.originalUrl} - ${req.ip}`);
+      next();
+    });
+  }
+
+  setupRoutes() {
+    // Gateway health check
+    this.app.get("/health", (req, res) => {
+      const services = serviceRegistry.listServices();
+      res.json({
+        service: "api-gateway",
+        status: "healthy",
+        timestamp: new Date().toISOString(),
+        architecture: "Microservices with NoSQL",
+        services: services,
+        serviceCount: Object.keys(services).length,
+      });
+    });
+
+    // Gateway info
+    this.app.get("/", (req, res) => {
+      res.json({
+        service: "API Gateway",
+        version: "2.0.0",
+        description: "Gateway para microsserviços com NoSQL (User, List, Item)",
+        architecture: "Microservices with NoSQL databases",
+        endpoints: {
+          auth: "/api/auth/*",
+          users: "/api/users/*",
+          lists: "/api/lists/*",
+          items: "/api/items/*",
+          dashboard: "/api/dashboard",
+          search: "/api/search",
+        },
+        services: serviceRegistry.listServices(),
+      });
+    });
+
+    // Service registry endpoint
+    this.app.get("/registry", (req, res) => {
+      const services = serviceRegistry.listServices();
+      res.json({
+        success: true,
+        services: services,
+        count: Object.keys(services).length,
+        timestamp: new Date().toISOString(),
+      });
+    });
+
+    // Debug endpoint
+    this.app.get("/debug/services", (req, res) => {
+      serviceRegistry.debugListServices();
+      res.json({
+        success: true,
+        services: serviceRegistry.listServices(),
+        stats: serviceRegistry.getStats(),
+      });
+    });
+
+    // Auth Routes -> User Service
+    this.app.use("/api/auth", (req, res, next) => {
+      this.proxyRequest("user-service", req, res, next);
+    });
+
+    // User Service Routes
+    this.app.use("/api/users", (req, res, next) => {
+      this.proxyRequest("user-service", req, res, next);
+    });
+
+    // Item Service Routes
+    this.app.use("/api/items", (req, res, next) => {
+      this.proxyRequest("item-service", req, res, next);
+    });
+
+    // List Service Routes
+    this.app.use("/api/lists", (req, res, next) => {
+      this.proxyRequest("list-service", req, res, next);
+    });
+
+    // Endpoints agregados
+    this.app.get("/api/dashboard", this.getDashboard.bind(this));
+    this.app.get("/api/search", this.globalSearch.bind(this));
+  }
+
+  setupErrorHandling() {
+    this.app.use("*", (req, res) => {
+      res.status(404).json({
+        success: false,
+        message: "Endpoint não encontrado",
+        service: "api-gateway",
+        availableEndpoints: [
+          "/api/auth",
+          "/api/users",
+          "/api/lists",
+          "/api/items",
+        ],
+      });
+    });
+
+    this.app.use((error, req, res, next) => {
+      console.error("Gateway Error:", error);
+      res.status(500).json({
+        success: false,
+        message: "Erro interno do gateway",
+        error: error.message,
+      });
+    });
+  }
+
+  // Proxy request to service
+  async proxyRequest(serviceName, req, res, next) {
+    try {
+      console.log(
+        `Proxy request: ${req.method} ${req.originalUrl} -> ${serviceName}`
+      );
+
+      if (this.isCircuitOpen(serviceName)) {
+        return res.status(503).json({
+          success: false,
+          message: `Serviço ${serviceName} temporariamente indisponível (Circuit Breaker)`,
+          service: serviceName,
         });
+      }
 
-        // Request logging
-        this.app.use((req, res, next) => {
-            console.log(`${req.method} ${req.originalUrl} - ${req.ip}`);
-            next();
+      let service;
+      try {
+        service = serviceRegistry.discover(serviceName);
+      } catch (error) {
+        console.error(
+          `Erro na descoberta do serviço ${serviceName}:`,
+          error.message
+        );
+        return res.status(503).json({
+          success: false,
+          message: `Serviço ${serviceName} não encontrado ou offline`,
+          service: serviceName,
         });
-    }
+      }
 
-    setupRoutes() {
-        // Gateway health check
-        this.app.get('/health', (req, res) => {
-            const services = serviceRegistry.listServices();
-            res.json({
-                service: 'api-gateway',
-                status: 'healthy',
-                timestamp: new Date().toISOString(),
-                architecture: 'Microservices with NoSQL',
-                services: services,
-                serviceCount: Object.keys(services).length
-            });
+      // Lógica de Reescrita de Caminho (Path Rewriting)
+      let targetPath = req.originalUrl;
+
+      if (serviceName === "user-service") {
+        // /api/users -> /users, /api/auth -> /auth
+        targetPath = targetPath
+          .replace("/api/users", "/users")
+          .replace("/api/auth", "/auth");
+      } else if (serviceName === "item-service") {
+        // /api/items -> /items
+        targetPath = targetPath.replace("/api/items", "/items");
+      } else if (serviceName === "list-service") {
+        // /api/lists -> /lists
+        targetPath = targetPath.replace("/api/lists", "/lists");
+      }
+
+      // Garantir que path comece com / e não fique vazio
+      if (!targetPath.startsWith("/")) targetPath = "/" + targetPath;
+      if (targetPath === "/") {
+        // Fallback para rota base do recurso se o path ficar vazio (ex: /api/items -> /items)
+        if (serviceName === "item-service") targetPath = "/items";
+        if (serviceName === "list-service") targetPath = "/lists";
+        if (serviceName === "user-service" && req.originalUrl.includes("users"))
+          targetPath = "/users";
+      }
+
+      const targetUrl = `${service.url}${targetPath}`;
+      console.log(`Target URL: ${targetUrl}`);
+
+      const config = {
+        method: req.method,
+        url: targetUrl,
+        headers: { ...req.headers },
+        timeout: 5000,
+        family: 4,
+        validateStatus: (status) => status < 500,
+      };
+
+      if (["POST", "PUT", "PATCH"].includes(req.method)) {
+        config.data = req.body;
+      }
+      if (Object.keys(req.query).length > 0) {
+        config.params = req.query;
+      }
+
+      // Limpar headers de host
+      delete config.headers.host;
+      delete config.headers["content-length"];
+
+      const response = await axios(config);
+      this.resetCircuitBreaker(serviceName);
+
+      res.status(response.status).json(response.data);
+    } catch (error) {
+      this.recordFailure(serviceName);
+      console.error(`Proxy error for ${serviceName}:`, error.message);
+
+      if (error.code === "ECONNREFUSED" || error.code === "ETIMEDOUT") {
+        res.status(503).json({
+          success: false,
+          message: `Serviço ${serviceName} indisponível`,
+          error: error.code,
         });
-
-        // Gateway info
-        this.app.get('/', (req, res) => {
-            res.json({
-                service: 'API Gateway',
-                version: '1.0.0',
-                description: 'Gateway para microsserviços com NoSQL',
-                architecture: 'Microservices with NoSQL databases',
-                database_approach: 'Database per Service (JSON-NoSQL)',
-                endpoints: {
-                    users: '/api/users/*',
-                    products: '/api/products/*',
-                    health: '/health',
-                    registry: '/registry',
-                    dashboard: '/api/dashboard',
-                    search: '/api/search'
-                },
-                services: serviceRegistry.listServices()
-            });
+      } else if (error.response) {
+        res.status(error.response.status).json(error.response.data);
+      } else {
+        res.status(500).json({
+          success: false,
+          message: "Erro interno do gateway",
+          error: error.message,
         });
-
-        // Service registry endpoint
-        this.app.get('/registry', (req, res) => {
-            const services = serviceRegistry.listServices();
-            res.json({
-                success: true,
-                services: services,
-                count: Object.keys(services).length,
-                timestamp: new Date().toISOString()
-            });
-        });
-
-        // Debug endpoint para troubleshooting
-        this.app.get('/debug/services', (req, res) => {
-            serviceRegistry.debugListServices();
-            res.json({
-                success: true,
-                services: serviceRegistry.listServices(),
-                stats: serviceRegistry.getStats()
-            });
-        });
-
-        // User Service routes - CORRIGIDO
-        this.app.use('/api/users', (req, res, next) => {
-            console.log(`🔗 Roteando para user-service: ${req.method} ${req.originalUrl}`);
-            this.proxyRequest('user-service', req, res, next);
-        });
-
-        // Product Service routes - CORRIGIDO  
-        this.app.use('/api/products', (req, res, next) => {
-            console.log(`🔗 Roteando para product-service: ${req.method} ${req.originalUrl}`);
-            this.proxyRequest('product-service', req, res, next);
-        });
-
-        // Endpoints agregados
-        this.app.get('/api/dashboard', this.getDashboard.bind(this));
-        this.app.get('/api/search', this.globalSearch.bind(this));
+      }
     }
-    setupErrorHandling() {
-        // 404 handler
-        this.app.use('*', (req, res) => {
-            res.status(404).json({
-                success: false,
-                message: 'Endpoint não encontrado',
-                service: 'api-gateway',
-                availableEndpoints: {
-                    users: '/api/users',
-                    products: '/api/products',
-                    dashboard: '/api/dashboard',
-                    search: '/api/search'
-                }
-            });
-        });
+  }
 
-        // Error handler
-        this.app.use((error, req, res, next) => {
-            console.error('Gateway Error:', error);
-            res.status(500).json({
-                success: false,
-                message: 'Erro interno do gateway',
-                service: 'api-gateway'
-            });
-        });
+  // Circuit Breaker Logic
+  isCircuitOpen(serviceName) {
+    const breaker = this.circuitBreakers.get(serviceName);
+    if (!breaker) return false;
+
+    const now = Date.now();
+    if (breaker.isOpen && now - breaker.lastFailure > 30000) {
+      breaker.isOpen = false;
+      breaker.isHalfOpen = true;
+      console.log(`Circuit breaker half-open for ${serviceName}`);
+      return false;
     }
+    return breaker.isOpen;
+  }
 
-    // Proxy request to service
-    async proxyRequest(serviceName, req, res, next) {
-        try {
-            console.log(`🔄 Proxy request: ${req.method} ${req.originalUrl} -> ${serviceName}`);
-            
-            // Verificar circuit breaker
-            if (this.isCircuitOpen(serviceName)) {
-                console.log(`⚡ Circuit breaker open for ${serviceName}`);
-                return res.status(503).json({
-                    success: false,
-                    message: `Serviço ${serviceName} temporariamente indisponível`,
-                    service: serviceName
-                });
-            }
+  recordFailure(serviceName) {
+    let breaker = this.circuitBreakers.get(serviceName) || {
+      failures: 0,
+      isOpen: false,
+      isHalfOpen: false,
+      lastFailure: null,
+    };
+    breaker.failures++;
+    breaker.lastFailure = Date.now();
 
-            // Descobrir serviço com debug
-            let service;
-            try {
-                service = serviceRegistry.discover(serviceName);
-            } catch (error) {
-                console.error(`❌ Erro na descoberta do serviço ${serviceName}:`, error.message);
-                
-                // Debug: listar serviços disponíveis
-                const availableServices = serviceRegistry.listServices();
-                console.log(`📋 Serviços disponíveis:`, Object.keys(availableServices));
-                
-                return res.status(503).json({
-                    success: false,
-                    message: `Serviço ${serviceName} não encontrado`,
-                    service: serviceName,
-                    availableServices: Object.keys(availableServices)
-                });
-            }
-            
-            // Construir URL de destino corrigida
-            const originalPath = req.originalUrl;
-            let targetPath = '';
-            
-            // Extrair o path correto baseado no serviço
-            if (serviceName === 'user-service') {
-                // /api/users/auth/login -> /auth/login
-                // /api/users -> /users
-                // /api/users/123 -> /users/123
-                targetPath = originalPath.replace('/api/users', '');
-                if (!targetPath.startsWith('/')) {
-                    targetPath = '/' + targetPath;
-                }
-                // Se path vazio, usar /users
-                if (targetPath === '/' || targetPath === '') {
-                    targetPath = '/users';
-                }
-            } else if (serviceName === 'product-service') {
-                // /api/products -> /products
-                // /api/products/123 -> /products/123
-                targetPath = originalPath.replace('/api/products', '');
-                if (!targetPath.startsWith('/')) {
-                    targetPath = '/' + targetPath;
-                }
-                // Se path vazio, usar /products
-                if (targetPath === '/' || targetPath === '') {
-                    targetPath = '/products';
-                }
-            }
-            
-            const targetUrl = `${service.url}${targetPath}`;
-            
-            console.log(`🎯 Target URL: ${targetUrl}`);
-            
-            // Configurar requisição
-            const config = {
-                method: req.method,
-                url: targetUrl,
-                headers: { ...req.headers },
-                timeout: 10000,
-                family: 4,  // Força IPv4
-                validateStatus: function (status) {
-                    return status < 500; // Aceitar todos os status < 500
-                }
-            };
-
-            // Adicionar body para requisições POST/PUT/PATCH
-            if (['POST', 'PUT', 'PATCH'].includes(req.method)) {
-                config.data = req.body;
-            }
-
-            // Adicionar query parameters
-            if (Object.keys(req.query).length > 0) {
-                config.params = req.query;
-            }
-
-            // Remover headers problemáticos
-            delete config.headers.host;
-            delete config.headers['content-length'];
-
-            console.log(`📤 Enviando ${req.method} para ${targetUrl}`);
-
-            // Fazer requisição
-            const response = await axios(config);
-            
-            // Resetar circuit breaker em caso de sucesso
-            this.resetCircuitBreaker(serviceName);
-            
-            console.log(`📥 Resposta recebida: ${response.status}`);
-            
-            // Retornar resposta
-            res.status(response.status).json(response.data);
-
-        } catch (error) {
-            // Registrar falha
-            this.recordFailure(serviceName);
-            
-            console.error(`❌ Proxy error for ${serviceName}:`, {
-                message: error.message,
-                code: error.code,
-                url: error.config?.url,
-                status: error.response?.status
-            });
-            
-            if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT') {
-                res.status(503).json({
-                    success: false,
-                    message: `Serviço ${serviceName} indisponível`,
-                    service: serviceName,
-                    error: error.code
-                });
-            } else if (error.response) {
-                // Encaminhar resposta de erro do serviço
-                console.log(`🔄 Encaminhando erro ${error.response.status} do serviço`);
-                res.status(error.response.status).json(error.response.data);
-            } else {
-                res.status(500).json({
-                    success: false,
-                    message: 'Erro interno do gateway',
-                    service: 'api-gateway',
-                    error: error.message
-                });
-            }
-        }
+    if (breaker.failures >= 3) {
+      breaker.isOpen = true;
+      breaker.isHalfOpen = false;
+      console.log(`Circuit breaker opened for ${serviceName}`);
     }
-    // Circuit Breaker 
-    isCircuitOpen(serviceName) {
-        const breaker = this.circuitBreakers.get(serviceName);
-        if (!breaker) return false;
+    this.circuitBreakers.set(serviceName, breaker);
+  }
 
-        const now = Date.now();
-        
-        // Verificar se o circuito deve ser meio-aberto
-        if (breaker.isOpen && (now - breaker.lastFailure) > 30000) { // 30 segundos
-            breaker.isOpen = false;
-            breaker.isHalfOpen = true;
-            console.log(`Circuit breaker half-open for ${serviceName}`);
-            return false;
-        }
-
-        return breaker.isOpen;
+  resetCircuitBreaker(serviceName) {
+    const breaker = this.circuitBreakers.get(serviceName);
+    if (breaker) {
+      breaker.failures = 0;
+      breaker.isOpen = false;
+      breaker.isHalfOpen = false;
     }
+  }
 
-    recordFailure(serviceName) {
-        let breaker = this.circuitBreakers.get(serviceName) || {
-            failures: 0,
-            isOpen: false,
-            isHalfOpen: false,
-            lastFailure: null
-        };
+  // Dashboard Agregado
+  async getDashboard(req, res) {
+    try {
+      const authHeader = req.header("Authorization");
+      if (!authHeader) {
+        return res
+          .status(401)
+          .json({ success: false, message: "Token obrigatório" });
+      }
 
-        breaker.failures++;
-        breaker.lastFailure = Date.now();
+      // Buscar dados de 3 serviços em paralelo
+      const [listsRes, itemsRes, categoriesRes] = await Promise.allSettled([
+        this.callService("list-service", "/lists", "GET", authHeader),
+        this.callService("item-service", "/items", "GET", null, { limit: 5 }),
+        this.callService("item-service", "/categories", "GET", null),
+      ]);
 
-        // Abrir circuito após 3 falhas
-        if (breaker.failures >= 3) {
-            breaker.isOpen = true;
-            breaker.isHalfOpen = false;
-            console.log(`Circuit breaker opened for ${serviceName}`);
-        }
+      const dashboard = {
+        timestamp: new Date().toISOString(),
+        architecture: "Microservices with NoSQL",
+        services_status: serviceRegistry.listServices(),
+        data: {
+          my_lists: {
+            available: listsRes.status === "fulfilled",
+            count:
+              listsRes.status === "fulfilled" ? listsRes.value.data.length : 0,
+            data:
+              listsRes.status === "fulfilled"
+                ? listsRes.value.data.slice(0, 3)
+                : null,
+          },
+          recent_items: {
+            available: itemsRes.status === "fulfilled",
+            data: itemsRes.status === "fulfilled" ? itemsRes.value.data : null,
+          },
+          categories: {
+            available: categoriesRes.status === "fulfilled",
+            data:
+              categoriesRes.status === "fulfilled"
+                ? categoriesRes.value.data
+                : null,
+          },
+        },
+      };
 
-        this.circuitBreakers.set(serviceName, breaker);
+      res.json({ success: true, data: dashboard });
+    } catch (error) {
+      console.error("Erro no dashboard:", error);
+      res
+        .status(500)
+        .json({ success: false, message: "Erro ao gerar dashboard" });
     }
+  }
 
-    resetCircuitBreaker(serviceName) {
-        const breaker = this.circuitBreakers.get(serviceName);
-        if (breaker) {
-            breaker.failures = 0;
-            breaker.isOpen = false;
-            breaker.isHalfOpen = false;
-            console.log(`Circuit breaker reset for ${serviceName}`);
-        }
+  // Busca Global (Listas + Itens)
+  async globalSearch(req, res) {
+    try {
+      const { q } = req.query;
+      const authHeader = req.header("Authorization");
+
+      if (!q) return res.status(400).json({ message: 'Query "q" obrigatória' });
+
+      const promises = [
+        this.callService("item-service", "/search", "GET", null, { q }),
+      ];
+
+      if (authHeader) {
+        promises.push(
+          this.callService("list-service", "/lists", "GET", authHeader)
+        );
+      }
+
+      const [itemResults, listResults] = await Promise.allSettled(promises);
+
+      const responseData = {
+        query: q,
+        items:
+          itemResults.status === "fulfilled"
+            ? itemResults.value.data.results
+            : [],
+        lists: [],
+      };
+
+      if (listResults && listResults.status === "fulfilled") {
+        responseData.lists = listResults.value.data.filter((list) =>
+          list.name.toLowerCase().includes(q.toLowerCase())
+        );
+      }
+
+      res.json({ success: true, data: responseData });
+    } catch (error) {
+      console.error("Erro na busca global:", error);
+      res.status(500).json({ success: false, message: "Erro na busca global" });
     }
+  }
 
-    // Dashboard agregado
-    async getDashboard(req, res) {
-        try {
-            const authHeader = req.header('Authorization');
-            
-            if (!authHeader) {
-                return res.status(401).json({
-                    success: false,
-                    message: 'Token de autenticação obrigatório'
-                });
-            }
+  async callService(
+    serviceName,
+    path,
+    method = "GET",
+    authHeader = null,
+    params = {}
+  ) {
+    const service = serviceRegistry.discover(serviceName);
+    const config = {
+      method,
+      url: `${service.url}${path}`,
+      timeout: 5000,
+      params,
+    };
+    if (authHeader) config.headers = { Authorization: authHeader };
+    const response = await axios(config);
+    return response.data;
+  }
 
-            // Buscar dados de múltiplos serviços
-            const [userResponse, productsResponse, categoriesResponse] = await Promise.allSettled([
-                this.callService('user-service', '/users', 'GET', authHeader, { limit: 5 }),
-                this.callService('product-service', '/products', 'GET', null, { limit: 5 }),
-                this.callService('product-service', '/categories', 'GET', null, {})
-            ]);
+  startHealthChecks() {
+    setInterval(() => serviceRegistry.performHealthChecks(), 30000);
+    setTimeout(() => serviceRegistry.performHealthChecks(), 5000);
+  }
 
-            const dashboard = {
-                timestamp: new Date().toISOString(),
-                architecture: 'Microservices with NoSQL',
-                database_approach: 'Database per Service',
-                services_status: serviceRegistry.listServices(),
-                data: {
-                    users: {
-                        available: userResponse.status === 'fulfilled',
-                        data: userResponse.status === 'fulfilled' ? userResponse.value.data : null,
-                        error: userResponse.status === 'rejected' ? userResponse.reason.message : null
-                    },
-                    products: {
-                        available: productsResponse.status === 'fulfilled',
-                        data: productsResponse.status === 'fulfilled' ? productsResponse.value.data : null,
-                        error: productsResponse.status === 'rejected' ? productsResponse.reason.message : null
-                    },
-                    categories: {
-                        available: categoriesResponse.status === 'fulfilled',
-                        data: categoriesResponse.status === 'fulfilled' ? categoriesResponse.value.data : null,
-                        error: categoriesResponse.status === 'rejected' ? categoriesResponse.reason.message : null
-                    }
-                }
-            };
-
-            res.json({
-                success: true,
-                data: dashboard
-            });
-
-        } catch (error) {
-            console.error('Erro no dashboard:', error);
-            res.status(500).json({
-                success: false,
-                message: 'Erro ao agregar dados do dashboard'
-            });
-        }
-    }
-
-    // Busca global entre serviços
-    async globalSearch(req, res) {
-        try {
-            const { q } = req.query;
-
-            if (!q) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Parâmetro de busca "q" é obrigatório'
-                });
-            }
-
-            // Buscar em produtos e usuários (se autenticado)
-            const authHeader = req.header('Authorization');
-            const searches = [
-                this.callService('product-service', '/search', 'GET', null, { q })
-            ];
-
-            // Adicionar busca de usuários se autenticado
-            if (authHeader) {
-                searches.push(
-                    this.callService('user-service', '/search', 'GET', authHeader, { q, limit: 5 })
-                );
-            }
-
-            const [productResults, userResults] = await Promise.allSettled(searches);
-
-            const results = {
-                query: q,
-                products: {
-                    available: productResults.status === 'fulfilled',
-                    results: productResults.status === 'fulfilled' ? productResults.value.data.results : [],
-                    error: productResults.status === 'rejected' ? productResults.reason.message : null
-                }
-            };
-
-            // Adicionar resultados de usuários se a busca foi feita
-            if (userResults) {
-                results.users = {
-                    available: userResults.status === 'fulfilled',
-                    results: userResults.status === 'fulfilled' ? userResults.value.data.results : [],
-                    error: userResults.status === 'rejected' ? userResults.reason.message : null
-                };
-            }
-
-            res.json({
-                success: true,
-                data: results
-            });
-
-        } catch (error) {
-            console.error('Erro na busca global:', error);
-            res.status(500).json({
-                success: false,
-                message: 'Erro na busca'
-            });
-        }
-    }
-
-    // Helper para chamar serviços
-    async callService(serviceName, path, method = 'GET', authHeader = null, params = {}) {
-        const service = serviceRegistry.discover(serviceName);
-        
-        const config = {
-            method,
-            url: `${service.url}${path}`,
-            timeout: 5000
-        };
-
-        if (authHeader) {
-            config.headers = { Authorization: authHeader };
-        }
-
-        if (method === 'GET' && Object.keys(params).length > 0) {
-            config.params = params;
-        }
-
-        const response = await axios(config);
-        return response.data;
-    }
-
-    // Health checks para serviços registrados
-    startHealthChecks() {
-        setInterval(async () => {
-            await serviceRegistry.performHealthChecks();
-        }, 30000); // A cada 30 segundos
-
-        // Health check inicial
-        setTimeout(async () => {
-            await serviceRegistry.performHealthChecks();
-        }, 5000);
-    }
-
-    start() {
-        this.app.listen(this.port, () => {
-            console.log('=====================================');
-            console.log(`API Gateway iniciado na porta ${this.port}`);
-            console.log(`URL: http://localhost:${this.port}`);
-            console.log(`Health: http://localhost:${this.port}/health`);
-            console.log(`Registry: http://localhost:${this.port}/registry`);
-            console.log(`Dashboard: http://localhost:${this.port}/api/dashboard`);
-            console.log(`Architecture: Microservices with NoSQL`);
-            console.log('=====================================');
-            console.log('Rotas disponíveis:');
-            console.log('   POST /api/auth/register');
-            console.log('   POST /api/auth/login');
-            console.log('   GET  /api/users');
-            console.log('   GET  /api/products');
-            console.log('   GET  /api/search?q=termo');
-            console.log('   GET  /api/dashboard');
-            console.log('=====================================');
-        });
-    }
+  start() {
+    this.app.listen(this.port, () => {
+      console.log("=====================================");
+      console.log(`API Gateway iniciado na porta ${this.port}`);
+      console.log(`URL: http://localhost:${this.port}`);
+      console.log("=====================================");
+    });
+  }
 }
 
-// Start gateway
 if (require.main === module) {
-    const gateway = new APIGateway();
-    gateway.start();
-
-    // Graceful shutdown
-    process.on('SIGTERM', () => process.exit(0));
-    process.on('SIGINT', () => process.exit(0));
+  const gateway = new APIGateway();
+  gateway.start();
+  process.on("SIGTERM", () => process.exit(0));
+  process.on("SIGINT", () => process.exit(0));
 }
 
 module.exports = APIGateway;

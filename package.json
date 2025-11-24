@@ -4,9 +4,10 @@
   "description": "Sistema de Microsserviços com API Gateway e NoSQL - PUC Minas",
   "main": "client-demo.js",
   "scripts": {
-    "start": "concurrently \"npm run start:user\" \"npm run start:product\" \"npm run start:gateway\"",
+    "start": "concurrently \"npm run start:user\" \"npm run start:item\" \"npm run start:list\" \"npm run start:gateway\"",
     "start:user": "cd services/user-service && npm start",
-    "start:product": "cd services/product-service && npm start",
+    "start:item": "cd services/item-service && npm start",
+    "start:list": "cd services/list-service && npm start",
     "start:gateway": "cd api-gateway && npm start",
     "dev": "concurrently \"npm run dev:user\" \"npm run dev:product\" \"npm run dev:gateway\"",
     "dev:user": "cd services/user-service && npm run dev",
@@ -14,7 +15,7 @@
     "dev:gateway": "cd api-gateway && npm run dev",
     "demo": "node client-demo.js",
     "health": "curl -s http://localhost:3000/health",
-    "install:all": "npm install && cd services/user-service && npm install && cd ../product-service && npm install && cd ../../api-gateway && npm install",
+    "install:all": "npm install && cd services/user-service && npm install && cd ../item-service && npm install && cd ../list-service && npm install && cd ../../api-gateway && npm install",
     "clean": "rm -rf node_modules services/*/node_modules api-gateway/node_modules",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
@@ -31,7 +32,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/aluno-pucminas/lab03-microservices-nosql.git"
+    "url": "https://github.com/erica-as/shopping-list-microservice.git"
   },
   "engines": {
     "node": ">=16.0.0",
