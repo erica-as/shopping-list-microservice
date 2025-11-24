@@ -1,0 +1,12 @@
+{
+  "name": "shopping-workers",
+  "version": "1.0.0",
+  "description": "Consumers para RabbitMQ",
+  "scripts": {
+    "start:notification": "node notification-worker.js",
+    "start:analytics": "node analytics-worker.js"
+  },
+  "dependencies": {
+    "amqplib": "^0.10.3"
+  }
+}

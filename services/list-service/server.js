@@ -8,6 +8,8 @@ const axios = require("axios");
 
 const JsonDatabase = require("../../shared/JsonDatabase");
 const serviceRegistry = require("../../shared/serviceRegistry");
+// 1. Importar o serviço de mensageria (RabbitMQ)
+const rabbitMQ = require("../../shared/RabbitMQService");
 
 class ListService {
   constructor() {
@@ -19,6 +21,9 @@ class ListService {
     this.setupDatabase();
     this.setupMiddleware();
     this.setupRoutes();
+
+    // 2. Iniciar a conexão com o RabbitMQ
+    this.initMessaging();
   }
 
   setupDatabase() {
@@ -31,6 +36,11 @@ class ListService {
     this.app.use(cors());
     this.app.use(morgan("dev"));
     this.app.use(express.json());
+  }
+
+  // 3. Método auxiliar para conectar ao RabbitMQ
+  async initMessaging() {
+    await rabbitMQ.connect();
   }
 
   // Middleware de Autenticação (Comunica com User Service)
@@ -77,6 +87,49 @@ class ListService {
       this.removeItemFromList.bind(this)
     );
     this.app.get("/lists/:id/summary", this.getListSummary.bind(this));
+
+    // 4. Nova Rota de Checkout Assíncrono
+    this.app.post("/lists/:id/checkout", this.checkoutList.bind(this));
+  }
+
+  // 5. Implementação do Checkout Assíncrono
+  async checkoutList(req, res) {
+    const { id } = req.params;
+    const list = await this.listsDb.findById(id);
+
+    if (!list || list.userId !== req.user.id) {
+      return res.status(404).json({ message: "List not found" });
+    }
+
+    if (list.status === "completed") {
+      return res.status(400).json({ message: "List already checked out" });
+    }
+
+    // Atualiza status localmente para 'completed'
+    await this.listsDb.update(id, {
+      status: "completed",
+      completedAt: new Date().toISOString(),
+    });
+
+    // Prepara Payload do Evento
+    const eventPayload = {
+      listId: list.id,
+      userId: req.user.id,
+      userEmail: req.user.email,
+      items: list.items,
+      summary: list.summary,
+      timestamp: new Date().toISOString(),
+    };
+
+    // Publica Mensagem no RabbitMQ (Fire and Forget)
+    await rabbitMQ.publish("list.checkout.completed", eventPayload);
+
+    // Responde Imediatamente (202 Accepted) indicando que o processo começou
+    res.status(202).json({
+      success: true,
+      message: "Checkout in process. You will be notified shortly.",
+      data: { listId: id, status: "processing" },
+    });
   }
 
   async createList(req, res) {
@@ -175,12 +228,10 @@ class ListService {
       res.json({ success: true, data: updatedList });
     } catch (error) {
       console.error("Erro ao adicionar item:", error.message);
-      res
-        .status(400)
-        .json({
-          message:
-            "Error adding item. Check Item ID or Item Service availability.",
-        });
+      res.status(400).json({
+        message:
+          "Error adding item. Check Item ID or Item Service availability.",
+      });
     }
   }
 
@@ -252,7 +303,8 @@ class ListService {
       serviceRegistry.register(this.serviceName, {
         url: this.serviceUrl,
         version: "1.0.0",
-        endpoints: ["/health", "/lists"],
+        // Adicionando a rota de checkout aos endpoints registrados
+        endpoints: ["/health", "/lists", "/lists/:id/checkout"],
       });
       // Heartbeat
       setInterval(
@@ -270,3 +322,5 @@ if (require.main === module) {
     process.exit(0);
   });
 }
+
+module.exports = ListService;
