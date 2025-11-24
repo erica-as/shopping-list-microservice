@@ -13,8 +13,8 @@ const serviceRegistry = require("../../shared/serviceRegistry");
 class ItemService {
   constructor() {
     this.app = express();
-    this.port = process.env.PORT || 3003; // Porta atualizada para 3003
-    this.serviceName = "item-service"; // Nome atualizado
+    this.port = process.env.PORT || 3003;
+    this.serviceName = "item-service";
     this.serviceUrl = `http://127.0.0.1:${this.port}`;
 
     this.setupDatabase();
@@ -26,7 +26,6 @@ class ItemService {
 
   setupDatabase() {
     const dbPath = path.join(__dirname, "database");
-    // Mudança da coleção para 'items'
     this.itemsDb = new JsonDatabase(dbPath, "items");
     console.log("Item Service: Banco NoSQL inicializado");
   }
@@ -47,14 +46,13 @@ class ItemService {
           ];
           const items = [];
 
-          // Gerar 4 itens por categoria (Total 20)
           categories.forEach((cat, idx) => {
             for (let i = 1; i <= 4; i++) {
               items.push({
                 id: uuidv4(),
                 name: `Produto ${cat} ${i}`,
                 category: cat,
-                brand: `Marca ${String.fromCharCode(65 + idx)}`, // Gera Marca A, Marca B...
+                brand: `Marca ${String.fromCharCode(65 + idx)}`,
                 unit: i % 2 === 0 ? "un" : "kg",
                 averagePrice: parseFloat((Math.random() * 20 + 1).toFixed(2)),
                 barcode: Math.floor(Math.random() * 10000000000).toString(),
@@ -84,7 +82,6 @@ class ItemService {
     this.app.use(express.json());
     this.app.use(express.urlencoded({ extended: true }));
 
-    // Service info headers atualizados
     this.app.use((req, res, next) => {
       res.setHeader("X-Service", this.serviceName);
       res.setHeader("X-Service-Version", "1.0.0");
@@ -94,7 +91,6 @@ class ItemService {
   }
 
   setupRoutes() {
-    // Health check
     this.app.get("/health", async (req, res) => {
       try {
         const itemCount = await this.itemsDb.count();
@@ -121,30 +117,15 @@ class ItemService {
       }
     });
 
-    // Service info
     this.app.get("/", (req, res) => {
       res.json({
         service: "Item Service",
-        version: "1.0.0",
-        description: "Microsserviço para catálogo de itens com NoSQL",
-        database: "JSON-NoSQL",
-        endpoints: [
-          "GET /items",
-          "GET /items/:id",
-          "POST /items",
-          "PUT /items/:id",
-          "DELETE /items/:id",
-          "GET /categories",
-          "GET /search",
-        ],
+        endpoints: ["GET /items", "GET /items/:id", "GET /categories"],
       });
     });
 
-    // Rotas de Itens (Renomeado de /products para /items)
     this.app.get("/items", this.getItems.bind(this));
     this.app.get("/items/:id", this.getItem.bind(this));
-
-    // Rotas protegidas
     this.app.post(
       "/items",
       this.authMiddleware.bind(this),
@@ -155,56 +136,43 @@ class ItemService {
       this.authMiddleware.bind(this),
       this.updateItem.bind(this)
     );
-    // Mantendo funcionalidade caso queira remover itens do catálogo
     this.app.delete(
       "/items/:id",
       this.authMiddleware.bind(this),
       this.deleteItem.bind(this)
     );
-
-    // Rotas auxiliares
     this.app.get("/categories", this.getCategories.bind(this));
     this.app.get("/search", this.searchItems.bind(this));
   }
 
   setupErrorHandling() {
     this.app.use("*", (req, res) => {
-      res.status(404).json({
-        success: false,
-        message: "Endpoint não encontrado",
-        service: this.serviceName,
-      });
+      res
+        .status(404)
+        .json({ success: false, message: "Endpoint não encontrado" });
     });
 
     this.app.use((error, req, res, next) => {
       console.error("Item Service Error:", error);
-      res.status(500).json({
-        success: false,
-        message: "Erro interno do serviço",
-        service: this.serviceName,
-      });
+      res
+        .status(500)
+        .json({ success: false, message: "Erro interno do serviço" });
     });
   }
 
-  // Auth middleware (valida token com User Service)
   async authMiddleware(req, res, next) {
     const authHeader = req.header("Authorization");
-
     if (!authHeader?.startsWith("Bearer ")) {
-      return res.status(401).json({
-        success: false,
-        message: "Token obrigatório",
-      });
+      return res
+        .status(401)
+        .json({ success: false, message: "Token obrigatório" });
     }
 
     try {
       const userService = serviceRegistry.discover("user-service");
-
       const response = await axios.post(
         `${userService.url}/auth/validate`,
-        {
-          token: authHeader.replace("Bearer ", ""),
-        },
+        { token: authHeader.replace("Bearer ", "") },
         { timeout: 5000 }
       );
 
@@ -212,13 +180,9 @@ class ItemService {
         req.user = response.data.data.user;
         next();
       } else {
-        res.status(401).json({
-          success: false,
-          message: "Token inválido",
-        });
+        res.status(401).json({ success: false, message: "Token inválido" });
       }
     } catch (error) {
-      console.error("Erro na validação do token:", error.message);
       res.status(503).json({
         success: false,
         message: "Serviço de autenticação indisponível",
@@ -226,14 +190,12 @@ class ItemService {
     }
   }
 
-  // Métodos de Controle (Refatorados para usar itemsDb)
-
   async getItems(req, res) {
     try {
       const { page = 1, limit = 10, category, name, active = true } = req.query;
-
       const skip = (page - 1) * parseInt(limit);
-      const filter = { active: active === "true" };
+
+      const filter = { active: String(active) === "true" };
 
       if (category) {
         filter.category = category;
@@ -245,7 +207,6 @@ class ItemService {
         sort: { createdAt: -1 },
       });
 
-      // Filtro adicional por nome (case insensitive) se fornecido fora do /search
       if (name) {
         items = items.filter((i) =>
           i.name.toLowerCase().includes(name.toLowerCase())
@@ -273,11 +234,10 @@ class ItemService {
   async getItem(req, res) {
     try {
       const item = await this.itemsDb.findById(req.params.id);
-      if (!item) {
+      if (!item)
         return res
           .status(404)
           .json({ success: false, message: "Item não encontrado" });
-      }
       res.json({ success: true, data: item });
     } catch (error) {
       res.status(500).json({ success: false, message: "Erro interno" });
@@ -295,12 +255,10 @@ class ItemService {
         barcode,
         description,
       } = req.body;
-
       if (!name || !category) {
-        return res.status(400).json({
-          success: false,
-          message: "Nome e categoria são obrigatórios",
-        });
+        return res
+          .status(400)
+          .json({ success: false, message: "Dados incompletos" });
       }
 
       const newItem = await this.itemsDb.create({
@@ -313,14 +271,11 @@ class ItemService {
         barcode: barcode || "",
         description: description || "",
         active: true,
-        metadata: {
-          createdBy: req.user.id,
-        },
+        metadata: { createdBy: req.user.id },
       });
 
       res.status(201).json({ success: true, data: newItem });
     } catch (error) {
-      console.error("Erro ao criar item:", error);
       res.status(500).json({ success: false, message: "Erro interno" });
     }
   }
@@ -333,9 +288,7 @@ class ItemService {
         return res.status(404).json({ message: "Item não encontrado" });
 
       const updates = { ...req.body };
-      delete updates.id; // Não permitir alterar ID
-
-      // Adicionar metadados de atualização
+      delete updates.id;
       updates.updatedBy = req.user.id;
 
       const updatedItem = await this.itemsDb.update(id, updates);
@@ -347,17 +300,14 @@ class ItemService {
 
   async deleteItem(req, res) {
     try {
-      // Soft delete
       const updated = await this.itemsDb.update(req.params.id, {
         active: false,
         deletedBy: req.user.id,
         deletedAt: new Date().toISOString(),
       });
-
       if (!updated)
         return res.status(404).json({ message: "Item não encontrado" });
-
-      res.json({ success: true, message: "Item removido com sucesso" });
+      res.json({ success: true, message: "Item removido" });
     } catch (error) {
       res.status(500).json({ success: false, message: "Erro interno" });
     }
@@ -366,7 +316,6 @@ class ItemService {
   async getCategories(req, res) {
     try {
       const items = await this.itemsDb.find({ active: true });
-      // Extrair categorias únicas
       const categories = [...new Set(items.map((i) => i.category))].sort();
       res.json({ success: true, data: categories });
     } catch (error) {
@@ -388,17 +337,11 @@ class ItemService {
         "description",
         "category",
       ]);
-
-      // Filtros e limite
       items = items.filter((i) => i.active).slice(0, parseInt(limit));
 
       res.json({
         success: true,
-        data: {
-          query: q,
-          results: items,
-          total: items.length,
-        },
+        data: { query: q, results: items, total: items.length },
       });
     } catch (error) {
       res.status(500).json({ success: false, message: "Erro interno" });
@@ -427,7 +370,6 @@ class ItemService {
       console.log(`URL: ${this.serviceUrl}`);
       console.log(`Health: ${this.serviceUrl}/health`);
       console.log("=====================================");
-
       this.registerWithRegistry();
       this.startHealthReporting();
     });
@@ -438,15 +380,12 @@ if (require.main === module) {
   const itemService = new ItemService();
   itemService.start();
 
-  // Graceful shutdown para o nome correto do serviço
-  process.on("SIGTERM", () => {
+  const cleanup = () => {
     serviceRegistry.unregister("item-service");
     process.exit(0);
-  });
-  process.on("SIGINT", () => {
-    serviceRegistry.unregister("item-service");
-    process.exit(0);
-  });
+  };
+  process.on("SIGTERM", cleanup);
+  process.on("SIGINT", cleanup);
 }
 
 module.exports = ItemService;

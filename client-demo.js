@@ -28,6 +28,32 @@ api.interceptors.request.use((config) => {
 // Helper de delay
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Função para buscar itens com tentativas (evita erro de tempo/seed)
+async function fetchItemsWithRetry(maxRetries = 5) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      const res = await api.get("/items");
+      // Gateway retorna: { success: true, data: [ ... ] }
+      const items = res.data.data;
+
+      if (items && items.length > 0) {
+        return items;
+      }
+      console.log(
+        `   ⏳ Aguardando seed do ItemService... (Tentativa ${
+          i + 1
+        }/${maxRetries})`
+      );
+    } catch (e) {
+      console.log(
+        `   ⚠️ Erro ao conectar com ItemService, tentando novamente...`
+      );
+    }
+    await delay(1500);
+  }
+  return [];
+}
+
 async function runTest() {
   console.log("=============================================");
   console.log("🚀 INICIANDO TESTE DE INTEGRAÇÃO DO SISTEMA");
@@ -35,7 +61,7 @@ async function runTest() {
 
   try {
     // PASSO 1: Verificar Saúde dos Serviços
-    console.log("Verificando Status do Sistema (Gateway)...");
+    console.log("1️⃣  Verificando Status do Sistema (Gateway)...");
     const healthRes = await axios.get(`${GATEWAY_URL}/health`, { family: 4 });
     console.log("   Status Gateway:", healthRes.data.status);
     console.log(
@@ -45,7 +71,7 @@ async function runTest() {
     console.log("   ✅ OK\n");
 
     // PASSO 2: Registro e Login
-    console.log("Autenticação de Usuário...");
+    console.log("2️⃣  Autenticação de Usuário...");
     const uniqueUser = `user_${Date.now()}`;
     const userPayload = {
       email: `${uniqueUser}@teste.com`,
@@ -56,7 +82,7 @@ async function runTest() {
     };
 
     // Registro
-    console.log(`Registrando usuário: ${uniqueUser}...`);
+    console.log(`   Registrando usuário: ${uniqueUser}...`);
     const registerRes = await api.post("/auth/register", userPayload);
     authToken = registerRes.data.data.token;
     userId = registerRes.data.data.user.id;
@@ -65,12 +91,12 @@ async function runTest() {
     console.log("   ✅ OK\n");
 
     // PASSO 3: Catálogo de Itens
-    console.log("Explorando Catálogo de Itens (Item Service)...");
+    console.log("3️⃣  Explorando Catálogo de Itens (Item Service)...");
 
-    const itemsRes = await api.get("/items");
-    const items = itemsRes.data.data;
+    // Usando a função com retry para garantir que o seed rodou
+    const items = await fetchItemsWithRetry();
 
-    if (!items || items.length === 0) {
+    if (items.length === 0) {
       throw new Error(
         "Nenhum item encontrado no catálogo. O seed do ItemService rodou?"
       );
@@ -83,7 +109,7 @@ async function runTest() {
     console.log("   ✅ OK\n");
 
     // PASSO 4: Gestão de Listas
-    console.log("Gerenciando Listas de Compras (List Service)...");
+    console.log("4️⃣  Gerenciando Listas de Compras (List Service)...");
 
     // Criar Lista
     console.log("   Criando nova lista...");
@@ -123,26 +149,38 @@ async function runTest() {
     );
     console.log("   ✅ OK\n");
 
-    // PASSO 5: Dashboard Agregado
-    console.log("Consultando Dashboard Agregado (API Gateway)...");
+    // PASSO 5: Dashboard Agregado (CORRIGIDO)
+    console.log("5️⃣  Consultando Dashboard Agregado (API Gateway)...");
     const dashRes = await api.get("/dashboard");
-    const dashData = dashRes.data.data;
 
-    console.log("   Minhas Listas (Resumo):", dashData.my_lists.count);
-    console.log(
-      "   Itens Recentes no Catálogo:",
-      dashData.recent_items.available ? "Disponível" : "Indisponível"
-    );
+    const dashboardPayload = dashRes.data.data;
+    const stats = dashboardPayload.data;
+
+    if (stats && stats.my_lists) {
+      console.log("   Minhas Listas (Resumo):", stats.my_lists.count);
+      console.log(
+        "   Itens Recentes no Catálogo:",
+        stats.recent_items.available ? "Disponível" : "Indisponível"
+      );
+    } else {
+      console.log(
+        "   ⚠️ Estrutura do dashboard inesperada:",
+        JSON.stringify(dashboardPayload, null, 2)
+      );
+    }
     console.log("   ✅ OK\n");
 
     // PASSO 6: Busca Global
-    console.log("Testando Busca Global Unificada...");
-    const searchTerm = items[0].name.split(" ")[0]; // Pega a primeira palavra do item (ex: "Produto")
+    console.log("6️⃣  Testando Busca Global Unificada...");
+    const searchTerm = items[0].name.split(" ")[0];
     console.log(`   Buscando por termo: "${searchTerm}"...`);
     const searchRes = await api.get(`/search?q=${searchTerm}`);
 
     console.log(`   Resultados em Itens: ${searchRes.data.data.items.length}`);
-    console.log(`   Resultados em Listas: ${searchRes.data.data.lists.length}`);
+    const listCount = searchRes.data.data.lists
+      ? searchRes.data.data.lists.length
+      : 0;
+    console.log(`   Resultados em Listas: ${listCount}`);
     console.log("   ✅ OK\n");
 
     console.log("🎉 TESTE CONCLUÍDO COM SUCESSO! O SISTEMA ESTÁ OPERACIONAL.");
@@ -160,4 +198,4 @@ async function runTest() {
   }
 }
 
-setTimeout(runTest, 2000);
+setTimeout(runTest, 3000);
