@@ -8,7 +8,7 @@ const axios = require("axios");
 
 const JsonDatabase = require("../../shared/JsonDatabase");
 const serviceRegistry = require("../../shared/serviceRegistry");
-// 1. Importar o serviço de mensageria (RabbitMQ)
+// 1. IMPORTAÇÃO DO SERVIÇO DE MENSAGERIA (RabbitMQ)
 const rabbitMQ = require("../../shared/RabbitMQService");
 
 class ListService {
@@ -22,12 +22,11 @@ class ListService {
     this.setupMiddleware();
     this.setupRoutes();
 
-    // 2. Iniciar a conexão com o RabbitMQ
+    // 2. INICIA A CONEXÃO COM O RABBITMQ NA PARTIDA DO SERVIÇO
     this.initMessaging();
   }
 
   setupDatabase() {
-    // Cria/Carrega o banco de dados de listas
     this.listsDb = new JsonDatabase(path.join(__dirname, "database"), "lists");
   }
 
@@ -38,12 +37,11 @@ class ListService {
     this.app.use(express.json());
   }
 
-  // 3. Método auxiliar para conectar ao RabbitMQ
+  // Método para inicializar conexão com RabbitMQ
   async initMessaging() {
     await rabbitMQ.connect();
   }
 
-  // Middleware de Autenticação (Comunica com User Service)
   async authMiddleware(req, res, next) {
     const authHeader = req.header("Authorization");
     if (!authHeader) return res.status(401).json({ message: "Token required" });
@@ -60,7 +58,7 @@ class ListService {
         res.status(401).json({ message: "Invalid Token" });
       }
     } catch (error) {
-      console.error("Erro de Auth:", error.message);
+      console.error("Auth error:", error.message);
       res.status(503).json({ message: "Auth service unavailable" });
     }
   }
@@ -70,7 +68,6 @@ class ListService {
       res.json({ status: "healthy", service: this.serviceName })
     );
 
-    // Rotas Protegidas
     this.app.use("/lists", this.authMiddleware.bind(this));
 
     this.app.post("/lists", this.createList.bind(this));
@@ -79,7 +76,6 @@ class ListService {
     this.app.put("/lists/:id", this.updateList.bind(this));
     this.app.delete("/lists/:id", this.deleteList.bind(this));
 
-    // Gerenciamento de Itens na Lista
     this.app.post("/lists/:id/items", this.addItemToList.bind(this));
     this.app.put("/lists/:id/items/:itemId", this.updateItemInList.bind(this));
     this.app.delete(
@@ -88,11 +84,11 @@ class ListService {
     );
     this.app.get("/lists/:id/summary", this.getListSummary.bind(this));
 
-    // 4. Nova Rota de Checkout Assíncrono
+    // 3. ROTA DE CHECKOUT (DISPARA O EVENTO ASSÍNCRONO)
     this.app.post("/lists/:id/checkout", this.checkoutList.bind(this));
   }
 
-  // 5. Implementação do Checkout Assíncrono
+  // --- 4. IMPLEMENTAÇÃO DO CHECKOUT ASSÍNCRONO (PRODUCER) ---
   async checkoutList(req, res) {
     const { id } = req.params;
     const list = await this.listsDb.findById(id);
@@ -105,13 +101,13 @@ class ListService {
       return res.status(400).json({ message: "List already checked out" });
     }
 
-    // Atualiza status localmente para 'completed'
+    // Passo A: Atualiza status no banco local para 'completed'
     await this.listsDb.update(id, {
       status: "completed",
       completedAt: new Date().toISOString(),
     });
 
-    // Prepara Payload do Evento
+    // Passo B: Cria o payload da mensagem (evento)
     const eventPayload = {
       listId: list.id,
       userId: req.user.id,
@@ -121,16 +117,19 @@ class ListService {
       timestamp: new Date().toISOString(),
     };
 
-    // Publica Mensagem no RabbitMQ (Fire and Forget)
+    // Passo C: Publica no RabbitMQ (Fire and Forget)
+    // Usa o tópico 'list.checkout.completed' para que os consumers certos peguem
     await rabbitMQ.publish("list.checkout.completed", eventPayload);
 
-    // Responde Imediatamente (202 Accepted) indicando que o processo começou
+    // Passo D: Responde rápido com 202 Accepted
     res.status(202).json({
       success: true,
-      message: "Checkout in process. You will be notified shortly.",
+      message: "Checkout in process. Notification will be sent shortly.",
       data: { listId: id, status: "processing" },
     });
   }
+
+  // --- MÉTODOS CRUD EXISTENTES ---
 
   async createList(req, res) {
     const { name, description } = req.body;
@@ -141,7 +140,7 @@ class ListService {
       name,
       description: description || "",
       status: "active",
-      items: [], // Array de itens da lista
+      items: [],
       summary: { totalItems: 0, purchasedItems: 0, estimatedTotal: 0 },
       createdAt: new Date().toISOString(),
     });
@@ -149,16 +148,14 @@ class ListService {
   }
 
   async getLists(req, res) {
-    // Filtra apenas as listas do usuário logado
     const lists = await this.listsDb.find({ userId: req.user.id });
     res.json({ success: true, data: lists });
   }
 
   async getList(req, res) {
     const list = await this.listsDb.findById(req.params.id);
-    if (!list || list.userId !== req.user.id) {
+    if (!list || list.userId !== req.user.id)
       return res.status(404).json({ message: "List not found" });
-    }
     res.json({ success: true, data: list });
   }
 
@@ -167,7 +164,6 @@ class ListService {
     const list = await this.listsDb.findById(id);
     if (!list || list.userId !== req.user.id)
       return res.status(404).json({ message: "Not found" });
-
     const updated = await this.listsDb.update(id, {
       name: req.body.name || list.name,
       description: req.body.description || list.description,
@@ -181,35 +177,28 @@ class ListService {
     const list = await this.listsDb.findById(id);
     if (!list || list.userId !== req.user.id)
       return res.status(404).json({ message: "Not found" });
-
     await this.listsDb.delete(id);
     res.json({ success: true, message: "Deleted" });
   }
 
-  // Adicionar Item: Busca dados no Item Service para enriquecer a lista
   async addItemToList(req, res) {
     const { id } = req.params;
     const { itemId, quantity, notes } = req.body;
-
     const list = await this.listsDb.findById(id);
     if (!list || list.userId !== req.user.id)
       return res.status(404).json({ message: "List not found" });
 
     try {
-      // 1. Descobrir onde está o Item Service
       const itemService = serviceRegistry.discover("item-service");
-
-      // 2. Buscar detalhes do produto (preço, nome, unidade)
       const itemRes = await axios.get(`${itemService.url}/items/${itemId}`);
       const itemData = itemRes.data.data;
 
       if (!itemData)
         return res.status(404).json({ message: "Item product not found" });
 
-      // 3. Adicionar à lista
       const newItem = {
         itemId: itemData.id,
-        itemName: itemData.name, // Cache do nome
+        itemName: itemData.name,
         quantity: parseInt(quantity) || 1,
         unit: itemData.unit,
         estimatedPrice: itemData.averagePrice,
@@ -228,17 +217,13 @@ class ListService {
       res.json({ success: true, data: updatedList });
     } catch (error) {
       console.error("Erro ao adicionar item:", error.message);
-      res.status(400).json({
-        message:
-          "Error adding item. Check Item ID or Item Service availability.",
-      });
+      res.status(400).json({ message: "Error adding item." });
     }
   }
 
   async updateItemInList(req, res) {
     const { id, itemId } = req.params;
     const { quantity, purchased, notes } = req.body;
-
     const list = await this.listsDb.findById(id);
     if (!list || list.userId !== req.user.id)
       return res.status(404).json({ message: "List not found" });
@@ -247,7 +232,6 @@ class ListService {
     if (itemIndex === -1)
       return res.status(404).json({ message: "Item not in list" });
 
-    // Atualiza campos se fornecidos
     if (quantity) list.items[itemIndex].quantity = parseInt(quantity);
     if (purchased !== undefined) list.items[itemIndex].purchased = purchased;
     if (notes) list.items[itemIndex].notes = notes;
@@ -265,10 +249,8 @@ class ListService {
     const list = await this.listsDb.findById(id);
     if (!list || list.userId !== req.user.id)
       return res.status(404).json({ message: "List not found" });
-
     list.items = list.items.filter((i) => i.itemId !== itemId);
     this.recalculateSummary(list);
-
     const updated = await this.listsDb.update(id, {
       items: list.items,
       summary: list.summary,
@@ -287,13 +269,11 @@ class ListService {
     let totalItems = 0;
     let purchasedItems = 0;
     let estimatedTotal = 0;
-
     list.items.forEach((item) => {
       totalItems += item.quantity;
       if (item.purchased) purchasedItems += item.quantity;
       estimatedTotal += item.quantity * item.estimatedPrice;
     });
-
     list.summary = { totalItems, purchasedItems, estimatedTotal };
   }
 
@@ -303,10 +283,8 @@ class ListService {
       serviceRegistry.register(this.serviceName, {
         url: this.serviceUrl,
         version: "1.0.0",
-        // Adicionando a rota de checkout aos endpoints registrados
         endpoints: ["/health", "/lists", "/lists/:id/checkout"],
       });
-      // Heartbeat
       setInterval(
         () => serviceRegistry.updateHealth(this.serviceName, true),
         30000
@@ -316,7 +294,8 @@ class ListService {
 }
 
 if (require.main === module) {
-  new ListService().start();
+  const listService = new ListService();
+  listService.start();
   process.on("SIGINT", () => {
     serviceRegistry.unregister("list-service");
     process.exit(0);

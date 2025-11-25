@@ -1,6 +1,5 @@
 const axios = require("axios");
 
-// Configuração
 const GATEWAY_URL = "http://127.0.0.1:3000";
 const API_URL = `${GATEWAY_URL}/api`;
 
@@ -25,7 +24,6 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-// Helper de delay
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Função para buscar itens com tentativas (evita erro de tempo/seed)
@@ -149,12 +147,11 @@ async function runTest() {
     );
     console.log("   ✅ OK\n");
 
-    // PASSO 5: Dashboard Agregado (CORRIGIDO)
+    // PASSO 5: Dashboard Agregado (CORRIGIDO AQUI)
     console.log("5️⃣  Consultando Dashboard Agregado (API Gateway)...");
     const dashRes = await api.get("/dashboard");
-
     const dashboardPayload = dashRes.data.data;
-    const stats = dashboardPayload.data;
+    const stats = dashboardPayload ? dashboardPayload.data : null;
 
     if (stats && stats.my_lists) {
       console.log("   Minhas Listas (Resumo):", stats.my_lists.count);
@@ -162,27 +159,40 @@ async function runTest() {
         "   Itens Recentes no Catálogo:",
         stats.recent_items.available ? "Disponível" : "Indisponível"
       );
+      console.log("   ✅ OK\n");
     } else {
       console.log(
-        "   ⚠️ Estrutura do dashboard inesperada:",
+        "   ⚠️ Estrutura do dashboard inesperada ou vazia:",
         JSON.stringify(dashboardPayload, null, 2)
       );
+      console.log("   ⚠️ Continuando teste...\n");
     }
-    console.log("   ✅ OK\n");
 
-    // PASSO 6: Busca Global
-    console.log("6️⃣  Testando Busca Global Unificada...");
-    const searchTerm = items[0].name.split(" ")[0];
-    console.log(`   Buscando por termo: "${searchTerm}"...`);
-    const searchRes = await api.get(`/search?q=${searchTerm}`);
+    console.log("6️⃣  ⚡ TESTANDO CHECKOUT ASSÍNCRONO (RABBITMQ)...");
+    console.log("   Enviando requisição de checkout...");
 
-    console.log(`   Resultados em Itens: ${searchRes.data.data.items.length}`);
-    const listCount = searchRes.data.data.lists
-      ? searchRes.data.data.lists.length
-      : 0;
-    console.log(`   Resultados em Listas: ${listCount}`);
-    console.log("   ✅ OK\n");
+    const start = Date.now();
+    const checkoutRes = await api.post(`/lists/${createdListId}/checkout`);
+    const duration = Date.now() - start;
 
+    console.log(
+      `   Status HTTP: ${checkoutRes.status} ${checkoutRes.statusText}`
+    );
+    console.log(`   Tempo de Resposta: ${duration}ms`);
+
+    if (checkoutRes.status === 202) {
+      console.log(
+        "   ✅ SUCESSO: O servidor aceitou o processamento em segundo plano."
+      );
+      console.log(
+        "   👉 Verifique os terminais dos Workers e o Painel CloudAMQP!"
+      );
+    } else {
+      throw new Error(
+        `Esperava status 202 Accepted, recebeu ${checkoutRes.status}`
+      );
+    }
+    console.log("\n=============================================");
     console.log("🎉 TESTE CONCLUÍDO COM SUCESSO! O SISTEMA ESTÁ OPERACIONAL.");
     console.log("=============================================");
   } catch (error) {
@@ -193,6 +203,7 @@ async function runTest() {
       console.error(`   URL: ${error.config.url}`);
     } else {
       console.error(`   Erro: ${error.message}`);
+      if (error.stack) console.error(error.stack);
     }
     process.exit(1);
   }

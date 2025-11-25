@@ -1,4 +1,7 @@
 const amqp = require("amqplib");
+const path = require("path");
+
+require("dotenv").config({ path: path.resolve(__dirname, "../.env") });
 
 class RabbitMQService {
   constructor() {
@@ -40,16 +43,25 @@ class RabbitMQService {
       await this.connect();
     }
 
-    if (this.channel) {
-      const buffer = Buffer.from(JSON.stringify(message));
-      const published = this.channel.publish(this.exchange, routingKey, buffer);
+    if (this.channel && this.connection) {
+      try {
+        const buffer = Buffer.from(JSON.stringify(message));
+        const published = this.channel.publish(
+          this.exchange,
+          routingKey,
+          buffer
+        );
 
-      if (published) {
-        console.log(`📤 Evento publicado: [${routingKey}]`);
-      } else {
-        console.error("⚠️ Falha ao publicar mensagem (Buffer cheio?)");
+        if (published) {
+          console.log(`📤 Evento publicado: [${routingKey}]`);
+        } else {
+          console.error("⚠️ Falha ao publicar mensagem (Buffer cheio?)");
+        }
+        return published;
+      } catch (err) {
+        console.error("Erro ao publicar mensagem:", err.message);
+        return false;
       }
-      return published;
     } else {
       console.error("❌ Impossível publicar: Canal fechado.");
       return false;

@@ -1,8 +1,11 @@
 const amqp = require("amqplib");
+const path = require("path");
 
 const QUEUE_NAME = "q_analytics";
 const EXCHANGE_NAME = "shopping_events";
-const ROUTING_KEY = "list.checkout.completed"; // Apenas completados
+const ROUTING_KEY = "list.checkout.completed";
+
+require("dotenv").config({ path: path.resolve(__dirname, "../.env") });
 
 async function start() {
   try {

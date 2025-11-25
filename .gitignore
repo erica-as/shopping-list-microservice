@@ -6,3 +6,4 @@ lists.json
 users_index.json
 users.json
 services-registry.json
+.env
